@@ -6,7 +6,7 @@ Daily E-Sales Report POS Automation
 Purpose:
     Connect to the POS SQL Server database, summarize the Daily
     E-Sales report for a selected period, and export it to Excel
-    using the same layout as the uploaded APR.xls template.
+    using the same layout as the APR.xls template.
 
 Report layout based on APR.xls:
     Row 1  : Company name
@@ -36,7 +36,7 @@ Main idea:
         - TotalSalesNetOfVAT
         - OutputVAT
 
-Date options:
+Date options from .env:
     DATE_MODE=PREVIOUS_MONTH
     DATE_MODE=CURRENT_MONTH
     DATE_MODE=CUSTOM
@@ -48,21 +48,10 @@ Example:
     py main.py 2026-04
     This generates report for 04/01/2026 to 04/30/2026.
 
-Important SQL note:
-    sql/query_daily_esales.sql can work in two modes:
-
-    1. No parameter markers:
-        SELECT ...;
-
-       Python will run it without passing dates.
-
-    2. With two parameter markers:
-        WHERE SaleDate >= ?
-          AND SaleDate < ?
-
-       Python will pass:
-            start_date
-            end_date_exclusive
+Important:
+    Option A setup tayo ngayon:
+        SQL query is inside main.py only.
+        Wala munang sql/query_daily_esales.sql file.
 
 ============================================================
 """
@@ -85,7 +74,13 @@ from openpyxl.utils import get_column_letter
 # BASE PATHS
 # ============================================================
 
+# BASE_DIR = folder kung nasaan itong main.py.
+# Example:
+# C:/python projects/daily_esales_pos_automation
 BASE_DIR = Path(__file__).resolve().parent
+
+# ENV_PATH = actual .env file path.
+# Dito kukunin ni Python ang SQL credentials, branch, POS details, etc.
 ENV_PATH = BASE_DIR / ".env"
 
 
@@ -95,11 +90,17 @@ ENV_PATH = BASE_DIR / ".env"
 
 def resolve_project_path(path_value: str, default_folder: str) -> Path:
     """
-    Convert folder path from .env into a real Path.
+    Convert folder path from .env into a real folder path.
 
-    Why:
-        If OUTPUT_DIR=output, dapat nasa project folder siya.
-        If full path ang nilagay, gagamitin niya yung full path.
+    Example:
+        OUTPUT_DIR=output
+
+    Result:
+        C:/python projects/daily_esales_pos_automation/output
+
+    If full path naman ang nilagay sa .env, gagamitin niya yung full path.
+    Example:
+        OUTPUT_DIR=C:/Reports/DailyESales
     """
     clean_value = (path_value or default_folder).strip()
     folder_path = Path(clean_value)
@@ -111,24 +112,32 @@ def resolve_project_path(path_value: str, default_folder: str) -> Path:
 
 
 # ============================================================
-# SETTINGS
+# SETTINGS / .ENV LOADING
 # ============================================================
 
 def load_settings() -> dict:
     """
-    Load .env values.
+    Load all settings from .env.
 
     Why:
-        Para hindi hardcoded ang SQL credentials, branch details,
-        company name, POS permit details, output folder, and logs folder.
+        Para hindi hardcoded sa Python ang:
+            - SQL credentials
+            - branch code
+            - company name
+            - POS serial no.
+            - MIN
+            - permit no.
+            - output folder
+            - logs folder
 
-        Safe din for GitHub because actual .env should be ignored.
+    Important:
+        Actual .env should NOT be committed to GitHub.
         Only .env.example should be committed.
     """
     load_dotenv(ENV_PATH)
 
     settings = {
-        # SQL connection
+        # SQL SERVER CONNECTION
         "SQL_SERVER": os.getenv("SQL_SERVER", "").strip(),
         "SQL_DATABASE": os.getenv("SQL_DATABASE", "").strip(),
         "SQL_USERNAME": os.getenv("SQL_USERNAME", "").strip(),
@@ -137,7 +146,7 @@ def load_settings() -> dict:
         "SQL_ENCRYPT": os.getenv("SQL_ENCRYPT", "no").strip(),
         "SQL_TRUST_SERVER_CERTIFICATE": os.getenv("SQL_TRUST_SERVER_CERTIFICATE", "yes").strip(),
 
-        # POS branch / report header info
+        # POS BRANCH / REPORT HEADER INFO
         "POS_BRANCH": os.getenv("POS_BRANCH", "").strip(),
         "POS_COMPANY_NAME": os.getenv("POS_COMPANY_NAME", "").strip(),
         "POS_OPERATOR_NAME": os.getenv("POS_OPERATOR_NAME", "").strip(),
@@ -146,27 +155,27 @@ def load_settings() -> dict:
         "POS_MIN": os.getenv("POS_MIN", "").strip(),
         "POS_PERMIT_NO": os.getenv("POS_PERMIT_NO", "").strip(),
 
-        # Date settings
+        # DATE SETTINGS
         "DATE_MODE": os.getenv("DATE_MODE", "PREVIOUS_MONTH").strip().upper(),
         "DATE_FROM": os.getenv("DATE_FROM", "").strip(),
         "DATE_TO": os.getenv("DATE_TO", "").strip(),
 
-        # VAT settings
+        # VAT SETTINGS
         "VAT_ROUNDING_MODE": os.getenv("VAT_ROUNDING_MODE", "PER_TRANSACTION").strip().upper(),
 
-        # Output settings
+        # OUTPUT SETTINGS
         "OUTPUT_DIR": os.getenv("OUTPUT_DIR", "output").strip(),
         "LOG_DIR": os.getenv("LOG_DIR", "logs").strip(),
-
-        # SQL query file
-        "SQL_QUERY_FILE": os.getenv("SQL_QUERY_FILE", "sql/query_daily_esales.sql").strip(),
     }
 
+    # Required fields.
+    # POS_TIN is not required kasi minsan blank siya sa template.
     required_fields = [
         "SQL_SERVER",
         "SQL_DATABASE",
         "SQL_USERNAME",
         "SQL_PASSWORD",
+        "SQL_DRIVER",
         "POS_BRANCH",
         "POS_COMPANY_NAME",
         "POS_OPERATOR_NAME",
@@ -182,13 +191,17 @@ def load_settings() -> dict:
             "Missing required .env value(s): " + ", ".join(missing)
         )
 
+    # Validate DATE_MODE.
     valid_date_modes = ["PREVIOUS_MONTH", "CURRENT_MONTH", "CUSTOM"]
+
     if settings["DATE_MODE"] not in valid_date_modes:
         raise ValueError(
             "Invalid DATE_MODE. Use PREVIOUS_MONTH, CURRENT_MONTH, or CUSTOM."
         )
 
+    # Validate VAT_ROUNDING_MODE.
     valid_vat_modes = ["PER_TRANSACTION", "SUMMARY"]
+
     if settings["VAT_ROUNDING_MODE"] not in valid_vat_modes:
         raise ValueError(
             "Invalid VAT_ROUNDING_MODE. Use PER_TRANSACTION or SUMMARY."
@@ -207,6 +220,10 @@ def setup_logging(settings: dict) -> None:
 
     Log file sample:
         logs/daily_esales_20260603.log
+
+    Why:
+        Para kapag may error sa Task Scheduler or manual run,
+        makikita natin sa logs folder ang reason.
     """
     log_dir = resolve_project_path(settings["LOG_DIR"], "logs")
     log_dir.mkdir(parents=True, exist_ok=True)
@@ -230,7 +247,13 @@ def setup_logging(settings: dict) -> None:
 
 def parse_date_yyyy_mm_dd(value: str, field_name: str) -> date:
     """
-    Parse YYYY-MM-DD date from .env.
+    Convert text date from .env into Python date.
+
+    Expected format:
+        YYYY-MM-DD
+
+    Example:
+        2026-04-01
     """
     try:
         return datetime.strptime(value, "%Y-%m-%d").date()
@@ -240,18 +263,24 @@ def parse_date_yyyy_mm_dd(value: str, field_name: str) -> date:
 
 def get_month_range(year: int, month: int) -> tuple[date, date, str]:
     """
+    Build monthly date range.
+
     Return:
         start_date
         end_date_exclusive
         month_label
 
-    end_date_exclusive means first day after the report month.
+    Why end_date_exclusive:
+        Mas safe sa SQL date filtering.
 
     Example:
         April 2026:
             start_date = 2026-04-01
             end_date_exclusive = 2026-05-01
-            month_label = 2026-04
+
+        SQL style:
+            WHERE ReceiptDate >= '2026-04-01'
+              AND ReceiptDate <  '2026-05-01'
     """
     start_date = date(year, month, 1)
 
@@ -261,12 +290,17 @@ def get_month_range(year: int, month: int) -> tuple[date, date, str]:
         end_date_exclusive = date(year, month + 1, 1)
 
     month_label = start_date.strftime("%Y-%m")
+
     return start_date, end_date_exclusive, month_label
 
 
 def get_previous_month_range() -> tuple[date, date, str]:
     """
-    Get previous month based on today's date.
+    Get previous month based on current system date.
+
+    Example:
+        If today is 2026-06-03:
+            report period = 2026-05-01 to before 2026-06-01
     """
     today = date.today()
 
@@ -278,9 +312,10 @@ def get_previous_month_range() -> tuple[date, date, str]:
 
 def get_current_month_range() -> tuple[date, date, str]:
     """
-    Get current month based on today's date.
+    Get current month based on current system date.
     """
     today = date.today()
+
     return get_month_range(today.year, today.month)
 
 
@@ -288,8 +323,12 @@ def get_custom_date_range(settings: dict) -> tuple[date, date, str]:
     """
     Get custom date range from .env.
 
-    DATE_FROM and DATE_TO are inclusive dates.
-    For SQL query, we convert DATE_TO into end_date_exclusive.
+    .env values:
+        DATE_FROM=2026-04-01
+        DATE_TO=2026-04-30
+
+    DATE_TO is inclusive in .env.
+    For SQL, we convert it to exclusive end date.
     """
     if not settings["DATE_FROM"] or not settings["DATE_TO"]:
         raise ValueError(
@@ -302,6 +341,7 @@ def get_custom_date_range(settings: dict) -> tuple[date, date, str]:
     if end_date_inclusive < start_date:
         raise ValueError("DATE_TO cannot be earlier than DATE_FROM.")
 
+    # Add 1 day para maging exclusive date for SQL filtering.
     end_date_exclusive = date.fromordinal(end_date_inclusive.toordinal() + 1)
 
     month_label = (
@@ -325,6 +365,9 @@ def get_report_date_range(settings: dict) -> tuple[date, date, str]:
             CURRENT_MONTH
             CUSTOM
     """
+    # Manual run override.
+    # Example:
+    # py main.py 2026-04
     if len(sys.argv) >= 2:
         month_text = sys.argv[1].strip()
 
@@ -367,9 +410,14 @@ def build_connection_string(settings: dict) -> str:
     """
     Build SQL Server connection string from .env.
 
-    Notes:
-        SQL_ENCRYPT and SQL_TRUST_SERVER_CERTIFICATE are included
-        because ODBC Driver 18 may require encryption settings.
+    Example output:
+        DRIVER={ODBC Driver 17 for SQL Server};
+        SERVER=192.168.1.3;
+        DATABASE=VQPBOS;
+        UID=your_username;
+        PWD=your_password;
+        Encrypt=no;
+        TrustServerCertificate=yes;
     """
     return (
         f"DRIVER={{{settings['SQL_DRIVER']}}};"
@@ -384,7 +432,10 @@ def build_connection_string(settings: dict) -> str:
 
 def connect_to_sql(settings: dict):
     """
-    Open SQL Server connection using values from .env.
+    Open SQL Server connection using .env values.
+
+    timeout=30 means:
+        Wait up to 30 seconds before failing connection.
     """
     conn_str = build_connection_string(settings)
 
@@ -395,42 +446,70 @@ def connect_to_sql(settings: dict):
     return pyodbc.connect(conn_str, timeout=30)
 
 
-def read_sql_query(settings: dict) -> str:
-    """
-    Read SQL query from sql/query_daily_esales.sql.
-
-    Why separate SQL file:
-        Mas madaling baguhin ang query without touching Python code.
-    """
-    query_path = BASE_DIR / settings["SQL_QUERY_FILE"]
-
-    if not query_path.exists():
-        raise FileNotFoundError(f"SQL query file not found: {query_path}")
-
-    return query_path.read_text(encoding="utf-8")
-
-
 # ============================================================
-# SQL PARAMETER CHECKING
+# DAILY E-SALES SQL QUERY
 # ============================================================
 
-def count_sql_parameter_markers(query: str) -> int:
+def get_daily_esales_sql_query() -> str:
     """
-    Count pyodbc parameter markers.
+    Daily E-Sales SQL query.
 
-    pyodbc uses ? as parameter placeholder.
+    Current status:
+        TEMPORARY TEST QUERY muna ito.
 
-    Example:
-        WHERE SaleDate >= ?
-          AND SaleDate < ?
+    Why temporary:
+        Hindi pa natin alam exact POS table/view na gagamitin for:
+            - receipt date
+            - invoice number
+            - net sales
+            - VAT
+            - zero rated
+            - VAT exempt
 
-    This returns 2.
+    Good news:
+        This temporary query already returns the correct output columns,
+        so matetest na natin:
+            - SQL connection
+            - Excel generation
+            - .env static POS/BIR fields
+            - output folder
+            - logs folder
 
-    Note:
-        This simple count is enough for our current setup.
-        Avoid putting question marks in SQL comments while testing.
+    Later:
+        Kapag nahanap na natin actual POS sales table/view,
+        dito lang natin papalitan yung SELECT.
+
+    Required output columns:
+        LastInvoiceNo
+        NetSalesWithVAT
+        ZeroRated
+        VATExempt
+        Vatable
+        TotalSalesNetOfVAT
+        OutputVAT
+
+    Important:
+        This query uses two pyodbc parameters:
+            ? = start_date
+            ? = end_date_exclusive
+
+        Kaya sa Python:
+            cursor.execute(query, start_date, end_date_exclusive)
+
+    For now:
+        WHERE ? < ? is only used para ma-test na date parameters work.
     """
-    return query.count("?")
+    return """
+    SELECT
+        '000000' AS LastInvoiceNo,
+        0.00 AS NetSalesWithVAT,
+        0.00 AS ZeroRated,
+        0.00 AS VATExempt,
+        0.00 AS Vatable,
+        0.00 AS TotalSalesNetOfVAT,
+        0.00 AS OutputVAT
+    WHERE ? < ?;
+    """
 
 
 # ============================================================
@@ -441,47 +520,29 @@ def fetch_report_rows(settings: dict, start_date: date, end_date_exclusive: date
     """
     Execute Daily E-Sales SQL query and return rows as dictionaries.
 
-    Expected SQL output columns:
-        LastInvoiceNo
-        NetSalesWithVAT
-        ZeroRated
-        VATExempt
-        Vatable
-        TotalSalesNetOfVAT
-        OutputVAT
+    Flow:
+        1. Get SQL query from get_daily_esales_sql_query().
+        2. Connect to SQL Server.
+        3. Run query with date parameters.
+        4. Convert SQL rows into list of dictionaries.
+
+    Expected return sample:
+        [
+            {
+                "LastInvoiceNo": "000000",
+                "NetSalesWithVAT": 0.00,
+                "ZeroRated": 0.00,
+                "VATExempt": 0.00,
+                "Vatable": 0.00,
+                "TotalSalesNetOfVAT": 0.00,
+                "OutputVAT": 0.00
+            }
+        ]
 
     Static columns like TIN, POS Serial No., MIN, Permit No.
-    are injected from .env after fetching.
-
-    This function supports two SQL file modes:
-
-    Mode 1:
-        SQL has 0 parameter markers.
-
-        Example:
-            SELECT
-                '000000' AS LastInvoiceNo,
-                0.00 AS NetSalesWithVAT,
-                0.00 AS ZeroRated,
-                0.00 AS VATExempt,
-                0.00 AS Vatable,
-                0.00 AS TotalSalesNetOfVAT,
-                0.00 AS OutputVAT;
-
-        Python will run:
-            cursor.execute(query)
-
-    Mode 2:
-        SQL has exactly 2 parameter markers.
-
-        Example:
-            WHERE ReceiptDate >= ?
-              AND ReceiptDate < ?
-
-        Python will run:
-            cursor.execute(query, start_date, end_date_exclusive)
+    are injected after fetching using apply_static_env_fields().
     """
-    query = read_sql_query(settings)
+    query = get_daily_esales_sql_query()
 
     with connect_to_sql(settings) as conn:
         cursor = conn.cursor()
@@ -490,28 +551,17 @@ def fetch_report_rows(settings: dict, start_date: date, end_date_exclusive: date
         logging.info("Report date from %s to before %s", start_date, end_date_exclusive)
         logging.info("VAT_ROUNDING_MODE: %s", settings["VAT_ROUNDING_MODE"])
 
-        parameter_count = count_sql_parameter_markers(query)
-        logging.info("SQL parameter markers found: %s", parameter_count)
-
-        if parameter_count == 0:
-            logging.warning(
-                "SQL query has no ? parameter markers. Running query without date parameters."
-            )
-            cursor.execute(query)
-
-        elif parameter_count == 2:
-            cursor.execute(query, start_date, end_date_exclusive)
-
-        else:
-            raise ValueError(
-                "SQL query must have either 0 or 2 parameter markers. "
-                f"Found: {parameter_count}"
-            )
+        # Since Option A tayo, query is inside main.py.
+        # The temporary query has exactly two ? parameters.
+        # Later, actual SQL should also use:
+        #   WHERE SaleDate >= ?
+        #     AND SaleDate < ?
+        cursor.execute(query, start_date, end_date_exclusive)
 
         if cursor.description is None:
             raise ValueError(
                 "SQL query did not return a result set. "
-                "Make sure query_daily_esales.sql uses SELECT and returns report columns."
+                "Make sure get_daily_esales_sql_query() uses SELECT."
             )
 
         columns = [column[0] for column in cursor.description]
@@ -524,12 +574,19 @@ def fetch_report_rows(settings: dict, start_date: date, end_date_exclusive: date
 
 def apply_static_env_fields(settings: dict, rows: list[dict]) -> list[dict]:
     """
-    Inject static POS/BIR details from .env into each report row.
+    Add static POS/BIR details from .env into each report row.
 
     Why:
-        These details usually come from POS permit/template and should
-        be configurable per branch, not hardcoded in Python and not
-        required from SQL.
+        These values are usually from the POS permit/template.
+        Hindi sila dapat hardcoded sa Python.
+        Hindi rin required kunin sa SQL.
+
+    Injected columns:
+        TIN
+        TerminalNo
+        POSSerialNo
+        MIN
+        PermitNo
     """
     enriched_rows = []
 
@@ -555,7 +612,12 @@ def money(value) -> float:
     """
     Convert SQL numeric/decimal values to float for Excel.
 
-    None becomes 0.00 to prevent blank total computations.
+    Why:
+        SQL Server may return Decimal values.
+        Excel/openpyxl accepts float/int more easily for formulas and formats.
+
+    If value is None:
+        return 0.0
     """
     if value is None:
         return 0.0
@@ -570,9 +632,16 @@ def money(value) -> float:
 # EXCEL STYLING
 # ============================================================
 
-def apply_basic_sheet_style(ws):
+def apply_basic_sheet_style(ws) -> None:
     """
     Apply layout and formatting based on APR.xls template.
+
+    Main formatting:
+        - Column widths
+        - Header fill color
+        - Borders
+        - Center alignment
+        - Money number format
     """
     widths = {
         "A": 14,
@@ -601,18 +670,35 @@ def apply_basic_sheet_style(ws):
     border = Border(left=thin, right=thin, top=thin, bottom=thin)
     header_fill = PatternFill("solid", fgColor="D9EAF7")
 
+    # Format table header row.
     for cell in ws[7]:
         if cell.column <= 12:
             cell.font = Font(bold=True)
             cell.fill = header_fill
             cell.border = border
-            cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+            cell.alignment = Alignment(
+                horizontal="center",
+                vertical="center",
+                wrap_text=True,
+            )
 
-    for row in ws.iter_rows(min_row=8, max_row=ws.max_row, min_col=1, max_col=12):
+    # Format data rows and grand total row.
+    for row in ws.iter_rows(
+        min_row=8,
+        max_row=ws.max_row,
+        min_col=1,
+        max_col=12,
+    ):
         for cell in row:
             cell.border = border
-            cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+            cell.alignment = Alignment(
+                horizontal="center",
+                vertical="center",
+                wrap_text=True,
+            )
 
+    # Money columns:
+    # G to L = columns 7 to 12.
     for col in range(7, 13):
         col_letter = get_column_letter(col)
 
@@ -633,6 +719,9 @@ def build_excel_report(
 ) -> Path:
     """
     Create Excel workbook using the APR.xls report layout.
+
+    Output file sample:
+        output/Daily_E-Sales_Report_CAM_2026-05.xlsx
     """
     if not rows:
         raise ValueError("No rows returned by SQL query. Report was not generated.")
@@ -643,16 +732,27 @@ def build_excel_report(
 
     end_date = get_end_date_inclusive(end_date_exclusive)
 
-    # Header section based on APR.xls
+    # ========================================================
+    # HEADER SECTION
+    # ========================================================
+
     ws["A1"] = settings["POS_COMPANY_NAME"]
     ws["A2"] = settings["POS_OPERATOR_NAME"]
     ws["A3"] = "Daily E-Sales Report"
-    ws["A4"] = f"For the Period of {start_date.strftime('%m/%d/%Y')} to {end_date.strftime('%m/%d/%Y')}"
+    ws["A4"] = (
+        f"For the Period of "
+        f"{start_date.strftime('%m/%d/%Y')} "
+        f"to {end_date.strftime('%m/%d/%Y')}"
+    )
 
     for cell_address in ["A1", "A2", "A3", "A4"]:
         ws[cell_address].font = Font(
             bold=True if cell_address in ["A1", "A3"] else False
         )
+
+    # ========================================================
+    # TABLE HEADER
+    # ========================================================
 
     headers = [
         "TIN",
@@ -672,6 +772,10 @@ def build_excel_report(
     for col_index, header in enumerate(headers, start=1):
         ws.cell(row=7, column=col_index).value = header
 
+    # ========================================================
+    # DATA ROWS
+    # ========================================================
+
     start_row = 8
 
     for row_index, row in enumerate(rows, start=start_row):
@@ -689,6 +793,10 @@ def build_excel_report(
         ws.cell(row=row_index, column=11).value = money(row.get("TotalSalesNetOfVAT"))
         ws.cell(row=row_index, column=12).value = money(row.get("OutputVAT"))
 
+    # ========================================================
+    # GRAND TOTAL ROW
+    # ========================================================
+
     total_row = start_row + len(rows)
 
     ws.cell(row=total_row, column=1).value = "Grand Total :"
@@ -696,13 +804,21 @@ def build_excel_report(
 
     for col in range(7, 13):
         col_letter = get_column_letter(col)
+
         ws.cell(row=total_row, column=col).value = (
             f"=SUM({col_letter}{start_row}:{col_letter}{total_row - 1})"
         )
         ws.cell(row=total_row, column=col).font = Font(bold=True)
 
+    # Apply style after writing data and totals.
     apply_basic_sheet_style(ws)
+
+    # Freeze pane below header.
     ws.freeze_panes = "A8"
+
+    # ========================================================
+    # SAVE FILE
+    # ========================================================
 
     output_dir = resolve_project_path(settings["OUTPUT_DIR"], "output")
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -719,7 +835,18 @@ def build_excel_report(
 # MAIN PROCESS
 # ============================================================
 
-def main():
+def main() -> None:
+    """
+    Main automation process.
+
+    Flow:
+        1. Load .env.
+        2. Setup logs.
+        3. Determine report period.
+        4. Run SQL query.
+        5. Add static POS/BIR fields from .env.
+        6. Generate Excel file.
+    """
     try:
         settings = load_settings()
         setup_logging(settings)
