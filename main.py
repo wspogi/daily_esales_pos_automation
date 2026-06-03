@@ -48,10 +48,25 @@ Example:
     py main.py 2026-04
     This generates report for 04/01/2026 to 04/30/2026.
 
+Important SQL note:
+    sql/query_daily_esales.sql can work in two modes:
+
+    1. No parameter markers:
+        SELECT ...;
+
+       Python will run it without passing dates.
+
+    2. With two parameter markers:
+        WHERE SaleDate >= ?
+          AND SaleDate < ?
+
+       Python will pass:
+            start_date
+            end_date_exclusive
+
 ============================================================
 """
 
-import calendar
 import logging
 import os
 import sys
@@ -85,11 +100,6 @@ def resolve_project_path(path_value: str, default_folder: str) -> Path:
     Why:
         If OUTPUT_DIR=output, dapat nasa project folder siya.
         If full path ang nilagay, gagamitin niya yung full path.
-
-    Example:
-        OUTPUT_DIR=output
-        Result:
-            C:/python projects/daily_esales_pos_automation/output
     """
     clean_value = (path_value or default_folder).strip()
     folder_path = Path(clean_value)
@@ -236,10 +246,12 @@ def get_month_range(year: int, month: int) -> tuple[date, date, str]:
         month_label
 
     end_date_exclusive means first day after the report month.
+
     Example:
         April 2026:
             start_date = 2026-04-01
             end_date_exclusive = 2026-05-01
+            month_label = 2026-04
     """
     start_date = date(year, month, 1)
 
@@ -291,7 +303,11 @@ def get_custom_date_range(settings: dict) -> tuple[date, date, str]:
         raise ValueError("DATE_TO cannot be earlier than DATE_FROM.")
 
     end_date_exclusive = date.fromordinal(end_date_inclusive.toordinal() + 1)
-    month_label = f"{start_date.strftime('%Y%m%d')}_to_{end_date_inclusive.strftime('%Y%m%d')}"
+
+    month_label = (
+        f"{start_date.strftime('%Y%m%d')}_to_"
+        f"{end_date_inclusive.strftime('%Y%m%d')}"
+    )
 
     return start_date, end_date_exclusive, month_label
 
@@ -395,6 +411,29 @@ def read_sql_query(settings: dict) -> str:
 
 
 # ============================================================
+# SQL PARAMETER CHECKING
+# ============================================================
+
+def count_sql_parameter_markers(query: str) -> int:
+    """
+    Count pyodbc parameter markers.
+
+    pyodbc uses ? as parameter placeholder.
+
+    Example:
+        WHERE SaleDate >= ?
+          AND SaleDate < ?
+
+    This returns 2.
+
+    Note:
+        This simple count is enough for our current setup.
+        Avoid putting question marks in SQL comments while testing.
+    """
+    return query.count("?")
+
+
+# ============================================================
 # DATA FETCHING
 # ============================================================
 
@@ -413,6 +452,34 @@ def fetch_report_rows(settings: dict, start_date: date, end_date_exclusive: date
 
     Static columns like TIN, POS Serial No., MIN, Permit No.
     are injected from .env after fetching.
+
+    This function supports two SQL file modes:
+
+    Mode 1:
+        SQL has 0 parameter markers.
+
+        Example:
+            SELECT
+                '000000' AS LastInvoiceNo,
+                0.00 AS NetSalesWithVAT,
+                0.00 AS ZeroRated,
+                0.00 AS VATExempt,
+                0.00 AS Vatable,
+                0.00 AS TotalSalesNetOfVAT,
+                0.00 AS OutputVAT;
+
+        Python will run:
+            cursor.execute(query)
+
+    Mode 2:
+        SQL has exactly 2 parameter markers.
+
+        Example:
+            WHERE ReceiptDate >= ?
+              AND ReceiptDate < ?
+
+        Python will run:
+            cursor.execute(query, start_date, end_date_exclusive)
     """
     query = read_sql_query(settings)
 
@@ -423,10 +490,29 @@ def fetch_report_rows(settings: dict, start_date: date, end_date_exclusive: date
         logging.info("Report date from %s to before %s", start_date, end_date_exclusive)
         logging.info("VAT_ROUNDING_MODE: %s", settings["VAT_ROUNDING_MODE"])
 
-        # Query must accept two parameters:
-        #   ? = start_date
-        #   ? = end_date_exclusive
-        cursor.execute(query, start_date, end_date_exclusive)
+        parameter_count = count_sql_parameter_markers(query)
+        logging.info("SQL parameter markers found: %s", parameter_count)
+
+        if parameter_count == 0:
+            logging.warning(
+                "SQL query has no ? parameter markers. Running query without date parameters."
+            )
+            cursor.execute(query)
+
+        elif parameter_count == 2:
+            cursor.execute(query, start_date, end_date_exclusive)
+
+        else:
+            raise ValueError(
+                "SQL query must have either 0 or 2 parameter markers. "
+                f"Found: {parameter_count}"
+            )
+
+        if cursor.description is None:
+            raise ValueError(
+                "SQL query did not return a result set. "
+                "Make sure query_daily_esales.sql uses SELECT and returns report columns."
+            )
 
         columns = [column[0] for column in cursor.description]
         rows = [dict(zip(columns, row)) for row in cursor.fetchall()]
@@ -661,8 +747,6 @@ def main():
         print(f"SUCCESS: Report generated: {output_file}")
 
     except Exception as exc:
-        # If logging was already configured, this will go to logs.
-        # If not, it will still print error in terminal.
         logging.exception("Failed to generate Daily E-Sales Report: %s", exc)
         print(f"ERROR: {exc}")
         sys.exit(1)
