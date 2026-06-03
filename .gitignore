@@ -1,0 +1,21 @@
+# Secrets
+.env
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Generated report files
+output/*.xlsx
+logs/*.log
+
+# Keep folders in Git
+!output/.gitkeep
+!logs/.gitkeep
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
